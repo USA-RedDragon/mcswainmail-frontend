@@ -1,0 +1,124 @@
+version: 2.1
+jobs:
+  lint:
+    docker:
+      - image: circleci/node:10.15
+
+    working_directory: ~/repo
+
+    steps:
+      - checkout
+      - run:
+          name: Install Dependencies
+          command: npm ci
+      - run:
+          name: Lint
+          command: npm run lint -- --format junit --output-file ./testresults/eslint/results.xml
+      - store_test_results:
+          path: testresults
+
+  test-e2e:
+    docker:
+      - image: cypress/base:10.15.3
+
+    working_directory: ~/repo
+
+    steps:
+      - checkout
+      - run:
+          name: Install Dependencies
+          command: npm ci
+      - run:
+          name: Test
+          command: npm run test:e2e -- --headless --reporter junit
+          environment:
+            MOCHA_FILE: ./testresults/cypress/results.xml
+      - store_artifacts:
+          path: tests/e2e/videos
+      - store_test_results:
+          path: testresults
+
+  test-unit:
+    docker:
+      - image: circleci/node:10.15
+
+    working_directory: ~/repo
+
+    steps:
+      - checkout
+      - run:
+          name: Install Dependencies
+          command: npm ci
+      - run:
+          name: Test
+          command: npm run test:unit -- --reporter mocha-junit-reporter
+          environment:
+            MOCHA_FILE: ./testresults/mocha/results.xml
+      - store_test_results:
+          path: testresults
+
+  build:
+    docker:
+      - image: circleci/node:10.15
+
+    working_directory: ~/repo
+
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build Docker Image
+          command: docker build -t jamcswain/mcswainmail-frontend --build-arg VUE_APP_API_URL=https://mail.invictrix.dev .
+      - run:
+          name: Login to Docker Hub
+          command: echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+      - run:
+          name: Push Docker Image
+          command: docker push jamcswain/mcswainmail-frontend
+
+  deploy:
+    docker:
+      - image: alpine
+
+    working_directory: ~/repo
+
+    steps:
+      - run:
+          name: Install SSH
+          command: apk add --no-cache openssh
+      - add_ssh_keys:
+          fingerprints:
+            - "21:c9:6c:11:26:91:eb:bb:76:c7:20:de:5f:82:c2:44"
+      - run:
+          name: Add known_hosts
+          command: echo "$SSH_HOSTNAME,$SSH_IP $SSH_SCHEME $SSH_SERVER_KEY" >> ~/.ssh/known_hosts
+      - run:
+          name: Pull Docker images
+          command: ssh $SSH_USERNAME@$SSH_HOSTNAME docker-compose -f gitreview/docker-compose.yml pull
+      - run:
+          name: Bring docker-compose up
+          command: ssh $SSH_USERNAME@$SSH_HOSTNAME docker-compose -f gitreview/docker-compose.yml up -d
+
+workflows:
+  version: 2
+  workflow:
+    jobs:
+      - lint
+      - test-e2e
+      - test-unit
+      - build:
+          requires:
+            - lint
+            - test-e2e
+            - test-unit
+          filters:
+            branches:
+              only:
+                - master
+      - deploy:
+          requires:
+            - build
+          filters:
+            branches:
+              only:
+                - master
